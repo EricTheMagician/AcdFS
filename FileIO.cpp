@@ -107,7 +107,7 @@ void FileIO::open(){
 
 std::string FileIO::read(const size_t &size, const off_t &off) {
 //    const char* buffer;
-//    if(m_id_is_cached){
+//    if(m_is_cached){
 //        buffer = (char *) malloc(size);
 //        stream.seekg(off);
 //        stream.read((char *)buffer, size);
@@ -137,15 +137,14 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
         WeakBuffer cache = cursor->second;
         DownloadItem item = cache.lock();
         if(item) {
-            std::string *buffer2;
             item->last_access = time(NULL);
             if(item->buffer.length() == 0){
                 int yield_count = 0;
                 const int max_yield_count = 10000000;
 
-//                auto future = item->future;
-//                while( (!future.valid()) && (item->buffer.length() == 0) ){
-                while( !(item->future.valid()) && (item->buffer.length() == 0) ){
+                auto future = item->future;
+                while( (!future.valid()) && (item->buffer.length() == 0) ){
+//                while( !(item->future.valid()) && (item->buffer.length() == 0) ){
                     std::this_thread::yield();
                 }
                 while( (item->buffer.length() == 0) ){
@@ -186,9 +185,9 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
             if(item) {
                 item->last_access = time(NULL);
                 if(item->buffer.length() == 0){
-//                    auto future = item->future;
-//                    while( (!future.valid()) && (item->buffer.length() == 0) ){
-                    while( !(item->future.valid()) && (item->buffer.length() == 0) ){
+                    auto future = item->future;
+                    while( (!future.valid()) && (item->buffer.length() == 0) ){
+//                    while( !(item->future.valid()) && (item->buffer.length() == 0) ){
                         std::this_thread::yield();
                     }
                     while( (item->buffer.length() == 0) ){
@@ -225,6 +224,7 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
             if (temp >= fileSize){
                 break;
             }
+            chunksToDownload.push_back(temp);
         }
     }
 
@@ -241,7 +241,6 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
 
             DownloadCache.insert(std::make_pair(cacheName,cache));
             PriorityCache.push(cache);
-            LOG(TRACE) << "Launching "<< cacheName;
             cache->future =std::async(std::launch::async, &FileIO::download, this, api,cache, cacheName, start, start + BLOCK_DOWNLOAD_SIZE - 1);
 
          }
