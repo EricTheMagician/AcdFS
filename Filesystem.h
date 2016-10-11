@@ -11,6 +11,8 @@ class Filesystem {
 public:
     static void init(void *userdata, struct fuse_conn_info *conn);
     static void statfs (fuse_req_t req, fuse_ino_t ino);
+    static void create(fuse_req_t req, fuse_ino_t parent, const char *name,
+            mode_t mode, struct fuse_file_info *fi);
     static void lookup (fuse_req_t req, fuse_ino_t parent, const char *name);
     static void getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
     static void readdir(fuse_req_t req, fuse_ino_t ino, size_t size,

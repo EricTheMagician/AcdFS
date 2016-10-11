@@ -82,8 +82,11 @@ void Filesystem::statfs(fuse_req_t req, fuse_ino_t ino){
     };
     fuse_reply_statfs(req, &stat);
 }
-
+void Filesystem::create(fuse_req_t req, fuse_ino_t parent, const char *name,
+        mode_t mode, struct fuse_file_info *fi){}
 void Filesystem::release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi){
+    FileIO *io = (FileIO *) fi->fh;
+    delete(io);
     fuse_reply_err(req, 0);
 }
 
