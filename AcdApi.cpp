@@ -79,7 +79,15 @@ std::string AcdApi::Download(AcdObjectPtr object, uint64_t start, uint64_t end) 
 
     cpr::Url url = m_account->m_contentUrl + "nodes/" + object->m_id + "/content";
     cpr::Header headers{{"Authorization", "Bearer " + m_account->m_clientAccessToken},{"Range", range.str()}};
-    auto response = cpr::Get(url,headers);
+    cpr::Timeout timeout = cpr::Timeout{30000};
+    cpr::Response response;
+    try {
+        response = cpr::Get(url, headers, timeout);
+    }catch(std::exception &e){
+        LOG(DEBUG) << "There was an error while downloading a chunk: " << e.what();
+        LOG(DEBUG) <<  object->m_id << "\t" << start;
+        return Download(object, start, end);
+    }
 //    m_client_content_url->
 
     uint64_t expectedSize{end - start + 1};
