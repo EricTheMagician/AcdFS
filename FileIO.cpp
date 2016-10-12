@@ -39,7 +39,7 @@ public:
     ~__no_collision_download__(){}
     std::string buffer;
     std::string cacheName;
-    std::shared_future<std::string> future;
+    std::shared_future<void> future;
 //    bool operator<(const  __no_collision_download__& rhs) const
 //    {
 //        return  last_access < rhs.last_access;
@@ -149,7 +149,7 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
             if(item->buffer.length() == 0){
                 int yield_count = 0;
 
-                std::shared_future<std::string> future(item->future);
+                std::shared_future<void> future(item->future);
 
                 while( (!future.valid()) && (item->buffer.length() == 0) && (yield_count < max_yield_count) ){
 //                while( !(item->future.valid()) && (item->buffer.length() == 0) ){
@@ -203,7 +203,7 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
             DownloadItem item = cache.lock();
             if(item) {
                 if(item->buffer.length() == 0){
-                    std::shared_future<std::string> future(item->future);
+                    std::shared_future<void> future(item->future);
                     int yield_count = 0;
                     while( (!future.valid()) && (item->buffer.length() == 0) && (yield_count < max_yield_count) ){
 //                    while( !(item->future.valid()) && (item->buffer.length() == 0) ){
@@ -288,10 +288,10 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
 
 }
 
-std::string FileIO::download(AcdApi *api, DownloadItem cache, std::string cacheName, uint64_t start, uint64_t end){
+void FileIO::download(AcdApi *api, DownloadItem cache, std::string cacheName, uint64_t start, uint64_t end){
 //    VLOG(DOWNLOADINGNUMBERLOG) << "Downloading " << cacheName;
     LOG(TRACE) << "Downloading " << cacheName;
-    cache->buffer = api->Download(m_file,start,end);
+    cache->buffer = std::move(api->Download(m_file,start,end));
 //    auto f = std::async(std::launch::async, &AcdApi::Download, api, m_file,start,end);
 //    cache->buffer = f.get();
     while( (PriorityCache.size()*BLOCK_DOWNLOAD_SIZE) > MAX_CACHE_SIZE){
@@ -301,6 +301,6 @@ std::string FileIO::download(AcdApi *api, DownloadItem cache, std::string cacheN
         DownloadCache.erase(top->cacheName);
         top.reset();
     }
-    return cache->buffer;
+    return;
 
 }
