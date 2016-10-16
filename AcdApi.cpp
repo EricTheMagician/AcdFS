@@ -22,7 +22,7 @@
 #include "easylogging++.h"
 #include <cmath>
 #include <cpr/cpr.h>
-
+#include <fuse3/fuse_lowlevel.h>
 
 using namespace std;
 
@@ -47,6 +47,11 @@ inline std::string urlForSync(Account *account){
 inline std::string urlForAccessToken(Account *account){
     return "https://192.99.6.134:6214";
 }
+
+inline std::string urlForUpload(Account *account){
+    return account->get_contentUrl() + "nodes";
+}
+
 extern mongocxx::pool pool;
 
 
@@ -78,9 +83,12 @@ std::string AcdApi::Download(AcdObjectPtr object, uint64_t start, uint64_t end) 
     range << "bytes=" << start << "-" << end;
 
     cpr::Url url = m_account->m_contentUrl + "nodes/" + object->m_id + "/content";
-    cpr::Header headers{{"Authorization", "Bearer " + m_account->m_clientAccessToken},{"Range", range.str()}};
-    cpr::Timeout timeout = cpr::Timeout{30000};
-    cpr::Response response;
+//    std::string auth = "Bearer " + m_account->m_clientAccessToken;
+    cpr::Timeout timeout = cpr::Timeout{25000};
+    cpr::Header headers{{"Range", range.str()},{"Authorization", "Bearer " + m_account->m_clientAccessToken}};
+//    cpr::Header headers{{"Range", range.str()}};
+//    cpr::Header headers{{"Authorization", "Bearer " + m_account->m_clientAccessToken}};
+    cpr::Response response{};
     try {
         response = cpr::Get(url, headers, timeout);
     }catch(std::exception &e){
@@ -88,17 +96,27 @@ std::string AcdApi::Download(AcdObjectPtr object, uint64_t start, uint64_t end) 
         LOG(DEBUG) <<  object->m_id << "\t" << start;
         return Download(object, start, end);
     }
-//    m_client_content_url->
+//    m_client_content_url
 
     uint64_t expectedSize{end - start + 1};
     if(response.text.length() == expectedSize){
         return response.text;
     }else{
-        LOG(DEBUG) << "There was an error while downloading chunk." << std::endl << "Expected size was " << expectedSize << " but actual size downloaded was " << response.text.length() << std::endl
-                   << "Status Code was " << response.status_code << std::endl
-                   << "Error Message (if any) is: " << response.error.message;
+        if(response.status_code==429){
+            LOG(TRACE) << "Too many requests while downloading. Sleeping thread for 5 seconds";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+        if(response.status_code == 400) {
+            LOG(ERROR) << "Thrrowing EIO from downloading as this shouldn't happen. This usually means the underlying amazon file is corrupt";
+            throw(EIO);
+        }else {
+            LOG(DEBUG) << "There was an error while downloading chunk." << std::endl << "Expected size was "
+                       << expectedSize << " but actual size downloaded was " << response.text.length() << std::endl
+                       << "Status Code was " << response.status_code << std::endl
+                       << "Error Message (if any) is: " << response.error.message;
+            GetNewAccessToken();
+        }
 
-        GetNewAccessToken();
         return Download(object, start, end);
     }
 
@@ -114,20 +132,24 @@ void AcdApi::Sync(){
     try {
         cpr::Url url{urlForSync(m_account)};
         cpr::Header auth{{"Authorization", "Bearer "+m_account->m_clientAccessToken}};
+        cpr::Header contentType{{"Content-Type", "application/json"}};
 
         if(m_sync_checkpoint.size() > 0){
 //            cpr::Multipart payload{{"checkpoint", m_sync_checkpoint}};
 //            cpr::Multipart payload{{"checkpoint", "CIWm75D6KhoSCAEaDgETAAAAAZJAEkkkkkkk"}};
 //            cpr::Payload payload{{"checkpoint", m_sync_checkpoint}};
-            cpr::Body body{bsoncxx::to_json(document{}<<"checkpoint"<<m_sync_checkpoint << finalize)};
+            cpr::Body body{bsoncxx::to_json(document{}<<"checkpoint"<<m_sync_checkpoint << "includePurged" << "true" << finalize)};
             response = cpr::Post(
-                    url, auth, body,
-                    cpr::Header{{"Authorization", "Bearer "+m_account->m_clientAccessToken},{"Content-Type", "application/json"}}
+                    url,
+                    cpr::Header{{"Content-Type", "application/json"},{"Authorization", "Bearer "+m_account->m_clientAccessToken}},
+                    body
+//                    cpr::Payload{{"checkpoint", m_sync_checkpoint}}
 
             );
         }else{
             response = cpr::Post(
-                    cpr::Multipart{}, url, auth
+                     auth, url,
+                     cpr::Payload{}
             );
         }
         LOG(TRACE) << response.status_code;
@@ -461,5 +483,26 @@ AcdApi::AcdApi(Account *account): m_account(account){
 }
 
 AcdApi::~AcdApi(){
-    free(m_account);
+//    free(m_account);
+}
+
+std::string AcdApi::Upload(std::string metadata, std::string filename, Account *account) {
+
+    cpr::Url url{urlForUpload(account)};
+    cpr::Multipart multipart{{"metadata", metadata},  {"content", cpr::File{filename}}};
+    cpr::Header headers{{"Authorization", "Bearer " + m_account->m_clientAccessToken}};
+
+    cpr::Response response;
+    try{
+        response = cpr::Post(url, headers, multipart);
+    }catch(std::exception &e){
+        LOG(ERROR) << e.what();
+    }
+
+    if(response.status_code != 201){
+        //do something. 201 is normal and okay.
+    }
+
+    return response.text;
+
 }

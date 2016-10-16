@@ -14,6 +14,7 @@ public:
     void Sync();
     void SetEndPoints();
     std::string Download(AcdObjectPtr, uint64_t,uint64_t);
+    std::string Upload(std::string metadata, std::string filename, Account *account);
     virtual ~AcdApi();
 
 private:

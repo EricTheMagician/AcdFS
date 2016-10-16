@@ -26,16 +26,18 @@ public:
     void fillCache();
     std::vector<AcdObjectPtr> getChildrenFromObject(AcdObjectPtr);
     AcdObjectPtr doesParentHaveChild(std::string id, const char *childName);
-
+    AcdObjectPtr createNewChild(AcdObjectPtr parent, const char *name, mode_t mode);
     const std::string &get_metadataUrl() const;
 
     const std::string &get_contentUrl() const;
 
 private:
     void updateMapping(ino_t, std::string, AcdObject &);
+    void updateFileAfterUploading(AcdObjectPtr file, std::string response);
 private:
     friend class AcdApi;
     friend class Filesystem;
+    friend class FileIO;
 
 
 

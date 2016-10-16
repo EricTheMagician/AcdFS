@@ -15,8 +15,12 @@
 #include <sstream>
 #include <future>
 #include <boost/asio.hpp>
+#include <mutex>          // std::mutex
 #include <boost/thread.hpp>
-#define CACHEPATH "/tmp/mnt"
+#include <bsoncxx/builder/stream/document.hpp>
+#include <bsoncxx/json.hpp>
+
+#define CACHEPATH "/tmp/cache"
 
 //#define O_CREATE 32768
 //#define O_RDONLY  32768
@@ -89,25 +93,33 @@ inline uint64_t getChunkStart(uint64_t start){
 }
 
 
-FileIO::FileIO(AcdObjectPtr file, int flag, AcdApi *api): api(api), m_file(file), m_flags(flag), last_write(0){
-    m_writeable = flag & (O_WRONLY | O_RDWR | O_APPEND);
+FileIO::FileIO(AcdObjectPtr file, int flag, AcdApi *api): api(api), m_file(file), m_flags(flag), b_needs_uploading(false) {
+    m_writeable = flag & (O_WRONLY | O_RDWR | O_APPEND | O_CREAT);
     m_readable = flag & (O_RDONLY | O_RDWR);
 }
 
 void FileIO::open(){
 
-    struct tm ltm;
-    char *end = strptime(m_file->m_id.c_str(), "%Y/%b/%d ", &ltm);
-    if(end == NULL){
-        //file is not cached on the hdd
-        m_is_cached = false;
-        return;
+    if(m_writeable){
+        fs::path file_location = cache_path;
+        file_location /= m_file->m_id;
+        f_name = file_location.string();
+        stream.open(f_name, std::ios_base::out);
     }
+    else if(m_readable) {
+        struct tm ltm;
+        char *end = strptime(m_file->m_id.c_str(), "%Y/%b/%d ", &ltm);
+        if (end == NULL) {
+            //file is not cached on the hdd
+            b_is_cached = false;
+            return;
+        }
 
-    m_is_cached = true;
-    fs::path file_location = cache_path;
-    file_location /= m_file->m_id;
-    stream.open(file_location.string());
+        b_is_cached = true;
+        fs::path file_location = cache_path;
+        file_location /= m_file->m_id;
+        stream.open(file_location.string());
+    }
 
     return;
 }
@@ -124,7 +136,7 @@ std::string FileIO::read(const size_t &size, const off_t &off) {
 }
 
 static const int max_yield_count = 10000;
-
+std::mutex mtxDownloadInsert;
 std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
 
     uint64_t chunkStart = getChunkStart(off);
@@ -166,11 +178,14 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
                     VLOG(7) << "Waiting for 10 seconds!";
                     std::future_status status = item->future.wait_for(std::chrono::seconds(10));
                     if(status == std::future_status::timeout){
+                        future.get();
                         return getFromCache(size, off);
                     }
                 }
+                future.get();
 
             }
+
 
             uint64_t start = off % BLOCK_DOWNLOAD_SIZE;
             uint64_t size2 = spillOver? BLOCK_DOWNLOAD_SIZE-off : size;
@@ -219,11 +234,12 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
                     if( (item->buffer.length() == 0) ){
                         std::future_status status = item->future.wait_for(std::chrono::seconds(10));
                         if(status == std::future_status::timeout){
+                            future.get();
                             return getFromCache(size, off);
                         }
                     }
+                    future.get();
 
-                    item.reset();
 
 //                    LOG(TRACE) << "Buffer length was either valid :\t" <<item->buffer.length() ;
                 }
@@ -260,24 +276,33 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
         }
     }
 
-    for(uint64_t &start: chunksToDownload){
+    if(chunksToDownload.size() > 0){
+        AcdObjectPtr file = m_file;
+        file->m_lock.lock();
+//        mtxDownloadInsert.lock();
+        for(uint64_t &start: chunksToDownload) {
 
-        ss.str(std::string());
-        ss << m_file->m_id;
-        ss << "\t";
-        ss << start;
-        cacheName = ss.str();
-        cursor = DownloadCache.find(cacheName);
-        if (cursor == DownloadCache.cend()) {
-            DownloadItem cache = std::make_shared<__no_collision_download__>();
-//            cache->last_access = time(NULL);
-            cache->cacheName = cacheName;
+            ss.str(std::string());
+            ss << m_file->m_id;
+            ss << "\t";
+            ss << start;
+            cacheName = ss.str();
+            cursor = DownloadCache.find(cacheName);
+            if (cursor == DownloadCache.cend()) {
+                DownloadItem cache = std::make_shared<__no_collision_download__>();
+                //            cache->last_access = time(NULL);
+                cache->cacheName = cacheName;
 
-            DownloadCache.insert(std::make_pair(cacheName,cache));
-            PriorityCache.push(cache);
-            cache->future =std::async(std::launch::async, &FileIO::download, this, api,cache, cacheName, start, start + BLOCK_DOWNLOAD_SIZE - 1);
+                DownloadCache.insert(std::make_pair(cacheName, cache));
+                PriorityCache.push(cache);
+                cache->future = std::async(std::launch::async, &FileIO::download, this, api, cache, cacheName, start,
+                                           start + BLOCK_DOWNLOAD_SIZE - 1);
 
-         }
+            }
+        }
+        file->m_lock.unlock();
+
+//        mtxDownloadInsert.unlock();
     }
 
     if(done){
@@ -288,19 +313,58 @@ std::string FileIO::getFromCache( const size_t &size, const off_t &off ){
 
 }
 
+std::mutex mtxPrioriteCache;
 void FileIO::download(AcdApi *api, DownloadItem cache, std::string cacheName, uint64_t start, uint64_t end){
 //    VLOG(DOWNLOADINGNUMBERLOG) << "Downloading " << cacheName;
     LOG(TRACE) << "Downloading " << cacheName;
     cache->buffer = std::move(api->Download(m_file,start,end));
 //    auto f = std::async(std::launch::async, &AcdApi::Download, api, m_file,start,end);
 //    cache->buffer = f.get();
-    while( (PriorityCache.size()*BLOCK_DOWNLOAD_SIZE) > MAX_CACHE_SIZE){
-        auto top = PriorityCache.front();
-        PriorityCache.pop();
-//        std::cout << "Delete use count " << top.use_count() <<std::endl;
-        DownloadCache.erase(top->cacheName);
-        top.reset();
+    if( (PriorityCache.size()*BLOCK_DOWNLOAD_SIZE) > MAX_CACHE_SIZE){
+        if(mtxPrioriteCache.try_lock()){
+            while( (PriorityCache.size()*BLOCK_DOWNLOAD_SIZE) > MAX_CACHE_SIZE){
+                auto top = PriorityCache.front();
+                PriorityCache.pop();
+    //        std::cout << "Delete use count " << top.use_count() <<std::endl;
+                DownloadCache.erase(top->cacheName);
+                top.reset();
+            }
+            mtxPrioriteCache.unlock();
+        }
     }
     return;
 
+}
+
+void FileIO::release(){
+    if(b_needs_uploading){
+        auto released = fs::path(f_name);
+        released += ".released";
+        fs::rename(f_name, released);
+    }
+
+    stream.close();
+
+
+}
+
+void FileIO::upload(Account *account){
+
+    fs::path released{f_name};
+    LOG(INFO) << "Uploading \"" << f_name << "\" with id temporary id "<< m_file->m_id;
+    released += ".released";
+    bsoncxx::builder::stream::document metadata{};
+    metadata << "name" << m_file->m_name
+             << "parents" <<  bsoncxx::builder::stream::open_array << m_file->m_parentid << bsoncxx::builder::stream::close_array
+             << "kind" << "FILE";
+
+    std::string response = account->api->Upload(bsoncxx::to_json(metadata.view()), released.string(), account);
+    LOG(INFO) << "Finished uploading " << f_name;
+    account->updateFileAfterUploading(m_file,response);
+
+
+}
+
+FileIO::~FileIO(){
+    stream.close();
 }
